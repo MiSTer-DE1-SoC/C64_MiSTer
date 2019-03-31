@@ -1,7 +1,9 @@
-//============================================================================
+//=================================================================================================
 //
-//  MiSTer hardware abstraction module
-//  (c)2017-2019 Sorgelig
+//	 C64 for DE10-Standard / DE1-SoC
+//  hardware abstraction module (based on MiSTer C64 Sorgelig release 20190321 /
+//	 418ff1dab30c6891e2c693cebf790fdc29e8e2b7)
+//  (c)2019 mazsola2k@modernhackers.com / http://www.modernhackers.com
 //
 //  This program is free software; you can redistribute it and/or modify it
 //  under the terms of the GNU General Public License as published by the Free
@@ -27,17 +29,43 @@ module sys_top
 	input         FPGA_CLK3_50,
 
 	//////////// VGA ///////////
-	output  [5:0] VGA_R,
-	output  [5:0] VGA_G,
-	output  [5:0] VGA_B,
-	inout         VGA_HS,  // VGA_HS is secondary SD card detect when VGA_EN = 1 (inactive)
+	//DE10-nano board implementation contained 6 / color on the daugher board output
+	//output  [5:0] VGA_R,
+	//output  [5:0] VGA_G,
+	//output  [5:0] VGA_B,
+	//DE10-standard board implementation has to contian 8 / color otherwise the brightness is low on the DAC
+	output  [7:0] VGA_R,
+	output  [7:0] VGA_G,
+	output  [7:0] VGA_B,
+	output        VGA_HS,  // VGA_HS is secondary SD card detect when VGA_EN = 1 (inactive)
 	output		  VGA_VS,
-	input         VGA_EN,  // active low
+	//DE10-nano implementation for VGA expansion daughter board
+	//input         VGA_EN,  // active low
+	//DE10-standard implementation for on-board VGA DAC route - this will be overrided by code to set value to 0
+	inout         VGA_EN,  // active low
+	//DE10-standard implementation for on-board VGA DAC route - additional pins
+	output 		  VGA_CLK,
+	output 		  VGA_BLANK_N,
+	output 		  VGA_SYNC_N,
 
 	/////////// AUDIO //////////
 	output		  AUDIO_L,
 	output		  AUDIO_R,
 	output		  AUDIO_SPDIF,
+	
+	//DE10-standard / DE1-soc kit implementation for on-board Wolfson WM8731 Audio DAC
+	// Audio CODEC
+	inout wire     AUD_ADCLRCK,  // Audio CODEC ADC LR Clock
+	input wire     AUD_ADCDAT,   // Audio CODEC ADC Data
+	inout wire     AUD_DACLRCK,  // Audio CODEC DAC LR Clock
+	output wire    AUD_DACDAT,   // Audio CODEC DAC Data
+   inout wire     AUD_BCLK,     // Audio CODEC Bit-Stream Clock
+   output wire    AUD_XCK,      // Audio CODEC Chip Clock
+	
+	//DE10-standard / DE1-soc kit implementation for on-board Wolfson WM8731 Audio DAC
+	// I2C
+   inout wire     I2C_SDAT,     // I2C Data
+   output wire    I2C_SCLK,     // I2C Clock
 
 	//////////// HDMI //////////
 	output        HDMI_I2C_SCL,
@@ -682,11 +710,24 @@ vga_out vga_out
 wire vs1 = vga_scaler ? HDMI_TX_VS : vs;
 wire hs1 = vga_scaler ? HDMI_TX_HS : hs;
 
-assign VGA_VS = VGA_EN ? 1'bZ      : csync ?     1'b1     : ~vs1;
+//DE10-standard implementation for on-board VGA DAC route - assign values
+assign VGA_EN = 1'b0;		//enable VGA mode when VGA_EN is low
+
+assign VGA_VS = VGA_EN ? 1'bZ      : csync ? 1'b1 : ~vs1;
 assign VGA_HS = VGA_EN ? 1'bZ      : csync ? ~(vs1 ^ hs1) : ~hs1;
-assign VGA_R  = VGA_EN ? 6'bZZZZZZ : vga_o[23:18];
-assign VGA_G  = VGA_EN ? 6'bZZZZZZ : vga_o[15:10];
-assign VGA_B  = VGA_EN ? 6'bZZZZZZ : vga_o[7:2];
+
+//DE10-nano implementation for VGA Expansion board 6 channels / color
+//assign VGA_R  = VGA_EN ? 6'bZZZZZZ : vga_o[23:18];
+//assign VGA_G  = VGA_EN ? 6'bZZZZZZ : vga_o[15:10];
+//assign VGA_B  = VGA_EN ? 6'bZZZZZZ : vga_o[7:2];
+//DE10-standard implementation for on-board VGA DAC route - use 8 channels / color
+assign VGA_R  = VGA_EN ? 6'bZZZZZZ : vga_o[23:16];
+assign VGA_G  = VGA_EN ? 6'bZZZZZZ : vga_o[15:8];
+assign VGA_B  = VGA_EN ? 6'bZZZZZZ : vga_o[7:0];
+
+assign VGA_BLANK_N = VGA_HS && VGA_VS; //VGA DAC additional required pin
+assign VGA_SYNC_N = 0; 						//VGA DAC additional required pin
+assign VGA_CLK = HDMI_TX_CLK; 			//has to define a clock to VGA DAC clock otherwise the picture is noisy
 
 
 /////////////////////////  Audio output  ////////////////////////////////
@@ -774,6 +815,29 @@ alsa alsa
 	.pcm_r(alsa_r)
 );
 
+//// DE10-Standard / DE1-SoC audio codec i2c ////
+wire exchan;
+wire mix;
+assign exchan = 1'b0;
+assign mix = 1'b0;
+
+audio_top audio_top (
+  .clk          (clk_audio),  // input clock
+  .rst_n        (!reset),		// active low reset (from reset button)
+  // config
+  .exchan       (exchan),		// switch audio left / right channel
+  .mix          (mix),			// normal / centered mix (play some left channel on the right channel and vise-versa)
+  // audio shifter
+  .rdata        (audio_r),		// right channel sample data
+  .ldata        (audio_l),		// left channel sample data
+  .aud_bclk     (AUD_BCLK),	// CODEC data clock
+  .aud_daclrck  (AUD_DACLRCK),// CODEC data clock
+  .aud_dacdat   (AUD_DACDAT),	// CODEC data
+  .aud_xck      (AUD_XCK),  	// CODEC data clock
+  // I2C audio config
+  .i2c_sclk     (I2C_SCLK),  	// CODEC config clock
+  .i2c_sdat     (I2C_SDAT),   // CODEC config data
+);
 
 ////////////////  User I/O (USB 3.0 connector) /////////////////////////
 
