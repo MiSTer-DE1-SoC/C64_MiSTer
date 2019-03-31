@@ -1,4 +1,4 @@
-# C64 for [MiSTer](https://github.com/MiSTer-devel/Main_MiSTer/wiki)
+# C64 for [DE10-Standard Edition of MiSTer](https://github.com/MiSTer-DE10-Standard/Main_MiSTer/wiki)
 
 Based on FPGA64 by Peter Wendrich with heavy later modifications by different people.
 
@@ -33,3 +33,6 @@ Format is simple concatenation of Kernal.rom + C1541.rom
 
 ### Autoload the cartridge
 Place the desired cartridge with the name boot3.rom in C64 folder to autoload it on start.
+
+
+This project brought to you by http://www.modernhackers.com
