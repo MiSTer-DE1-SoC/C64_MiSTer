@@ -1,4 +1,4 @@
-# C64 for [DE10-Standard Edition of MiSTer](https://github.com/MiSTer-DE10-Standard/Main_MiSTer/wiki)
+# C64 for [DE1-SoC Edition of MiSTer](https://github.com/MiSTer-DE1-SoC/Main_MiSTer/wiki)
 
 ![C64 DE10-Standard FPGA](https://user-images.githubusercontent.com/48859672/55352045-3d469280-54c0-11e9-9253-6b6ef8164dc1.JPG)
 
