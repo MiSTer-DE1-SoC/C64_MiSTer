@@ -836,7 +836,7 @@ audio_top audio_top (
   .aud_xck      (AUD_XCK),  	// CODEC data clock
   // I2C audio config
   .i2c_sclk     (I2C_SCLK),  	// CODEC config clock
-  .i2c_sdat     (I2C_SDAT),   // CODEC config data
+  .i2c_sdat     (I2C_SDAT)   // CODEC config data
 );
 
 ////////////////  User I/O (USB 3.0 connector) /////////////////////////
