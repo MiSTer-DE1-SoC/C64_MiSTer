@@ -33,7 +33,7 @@ module emu
 	input         RESET,
 
 	//Must be passed to hps_io module
-	inout  [44:0] HPS_BUS,
+	inout  [45:0] HPS_BUS,
 
 	//Base video clock. Usually equals to CLK_SYS.
 	output        CLK_VIDEO,
@@ -63,13 +63,20 @@ module emu
 	output  [1:0] LED_POWER,
 	output  [1:0] LED_DISK,
 
+	// I/O board button press simulation (active high)
+	// b[1]: user button
+	// b[0]: osd button
+	output  [1:0] BUTTONS,
+
 	output [15:0] AUDIO_L,
 	output [15:0] AUDIO_R,
 	output        AUDIO_S,   // 1 - signed audio samples, 0 - unsigned
 	output  [1:0] AUDIO_MIX, // 0 - no mix, 1 - 25%, 2 - 50%, 3 - 100% (mono)
-	input         TAPE_IN,
 
-	// SD-SPI
+	//ADC
+	inout   [3:0] ADC_BUS,
+
+	//SD-SPI
 	output        SD_SCK,
 	output        SD_MOSI,
 	input         SD_MISO,
@@ -112,14 +119,15 @@ module emu
 	// Open-drain User port.
 	// 0 - D+/RX
 	// 1 - D-/TX
-	// 2..5 - USR1..USR4
+	// 2..6 - USR2..USR6
 	// Set USER_OUT to 1 to read from USER_IN.
-	input   [5:0] USER_IN,
-	output  [5:0] USER_OUT,
+	input   [6:0] USER_IN,
+	output  [6:0] USER_OUT,
 
 	input         OSD_STATUS
 );
 
+assign ADC_BUS  = 'Z;
 assign USER_OUT = '1;
 assign UART_RTS = UART_CTS;
 assign UART_DTR = UART_DSR;
@@ -130,13 +138,23 @@ assign {SD_SCK, SD_MOSI, SD_CS} = 'Z;
 
 assign LED_DISK = 0;
 assign LED_POWER = 0;
+assign LED_USER = c1541_1_led | c1541_2_led | ioctl_download | tape_led;
+assign BUTTONS   = 0;
 
 `include "build_id.v"
 localparam CONF_STR = {
 	"C64;;",
-	"S,D64,Mount Disk;",
+	"S0,D64,Mount Drive #8;",
+	"D0S1,D64,Mount Drive #9;",
+	"OP,Enable Drive #9,No,Yes;",
+	"-;",
 	"F,PRG,Load File;",
 	"F,CRT,Load Cartridge;",
+	"-;",
+	"F,TAP,Tape Load;",
+	"R7,Tape Play/Pause;",
+	"RN,Tape Unload;",
+	"OB,Tape Sound,Off,On;",
 	"-;",
 	"O2,Video standard,PAL,NTSC;",
 	"O45,Aspect ratio,Original,Wide,Zoom;",
@@ -149,10 +167,13 @@ localparam CONF_STR = {
 	"OC,Sound expander,No,OPL2;",
 	"OIJ,Stereo mix,none,25%,50%,100%;",
 	"-;",
-	"O3,Primary joystick,Port 2,Port 1;",
+	"O3,Swap joysticks,No,Yes;",
 	"O1,User port,Joysticks,UART;",
+	"OO,Mouse,Port 1,Port 2;",
 	"-;",
 	"OEF,Kernal,Loadable C64,Standard C64,C64GS;",
+	"-;",
+	"RH,Reset;",
 	"R0,Reset & Detach cartridge;",
 	"J,Button 1,Button 2,Button 3;",
 	"V,v",`BUILD_DATE
@@ -162,21 +183,88 @@ localparam CONF_STR = {
 wire pll_locked;
 wire clk_sys;
 wire clk64;
+wire clk48;
 
 pll pll
 (
 	.refclk(CLK_50M),
-	.outclk_0(clk64),
-	.outclk_1(SDRAM_CLK),
+	.outclk_0(clk48),
+	.outclk_1(clk64),
 	.outclk_2(clk_sys),
+	.reconfig_to_pll(reconfig_to_pll),
+	.reconfig_from_pll(reconfig_from_pll),
 	.locked(pll_locked)
 );
+
+wire [63:0] reconfig_to_pll;
+wire [63:0] reconfig_from_pll;
+wire        cfg_waitrequest;
+reg         cfg_write;
+reg   [5:0] cfg_address;
+reg  [31:0] cfg_data;
+
+pll_cfg pll_cfg
+(
+	.mgmt_clk(CLK_50M),
+	.mgmt_reset(0),
+	.mgmt_waitrequest(cfg_waitrequest),
+	.mgmt_read(0),
+	.mgmt_readdata(),
+	.mgmt_write(cfg_write),
+	.mgmt_address(cfg_address),
+	.mgmt_writedata(cfg_data),
+	.reconfig_to_pll(reconfig_to_pll),
+	.reconfig_from_pll(reconfig_from_pll)
+);
+
+always @(posedge CLK_50M) begin
+	reg ntscd = 0, ntscd2 = 0;
+	reg [2:0] state = 0;
+	reg ntsc_r;
+
+	ntscd <= ntsc;
+	ntscd2 <= ntscd;
+
+	cfg_write <= 0;
+	if(ntscd2 == ntscd && ntscd2 != ntsc_r) begin
+		state <= 1;
+		ntsc_r <= ntscd2;
+	end
+
+	if(!cfg_waitrequest) begin
+		if(state) state<=state+1'd1;
+		case(state)
+			1: begin
+					cfg_address <= 0;
+					cfg_data <= 0;
+					cfg_write <= 1;
+				end
+				/*
+			3: begin
+					cfg_address <= 4;
+					cfg_data <= ntsc_r ? 'h20504 : 'h404;
+					cfg_write <= 1;
+				end
+				*/
+			5: begin
+					cfg_address <= 7;
+					cfg_data <= ntsc_r ? 3357876127 : 1503512573;
+					cfg_write <= 1;
+				end
+			7: begin
+					cfg_address <= 2;
+					cfg_data <= 0;
+					cfg_write <= 1;
+				end
+		endcase
+	end
+end
 
 reg reset_n;
 always @(posedge clk_sys) begin
 	integer reset_counter;
 
-	if (status[0] | buttons[1] | !pll_locked) begin
+	if (status[0] | status[17] | buttons[1] | !pll_locked) begin
 		reset_counter <= 100000;
 		reset_n <= 0;
 	end
@@ -205,21 +293,24 @@ wire  [7:0] ioctl_data;
 wire  [7:0] ioctl_index;
 wire        ioctl_download;
 
-wire [31:0] sd_lba;
-wire        sd_rd;
-wire        sd_wr;
+wire [31:0] sd_lba1, sd_lba2;
+wire  [1:0] sd_rd;
+wire  [1:0] sd_wr;
 wire        sd_ack;
 wire  [8:0] sd_buff_addr;
 wire  [7:0] sd_buff_dout;
-wire  [7:0] sd_buff_din;
+wire  [7:0] sd_buff_din1, sd_buff_din2;
 wire        sd_buff_wr;
-wire        sd_change;
+wire  [1:0] sd_change;
 wire        disk_readonly;
 
+wire [24:0] ps2_mouse;
 wire [10:0] ps2_key;
 wire  [1:0] buttons;
+wire [21:0] gamma_bus;
 
-hps_io #(.STRLEN($size(CONF_STR)>>3)) hps_io
+
+hps_io #(.STRLEN($size(CONF_STR)>>3), .VDNUM(2)) hps_io
 (
 	.clk_sys(clk_sys),
 	.HPS_BUS(HPS_BUS),
@@ -232,22 +323,25 @@ hps_io #(.STRLEN($size(CONF_STR)>>3)) hps_io
 	.conf_str(CONF_STR),
 
 	.status(status),
+	.status_menumask(~status[25]),
 	.buttons(buttons),
 	.forced_scandoubler(forced_scandoubler),
+	.gamma_bus(gamma_bus),
 
-	.sd_lba(sd_lba),
+	.sd_lba(c1541_1_busy ? sd_lba1 : sd_lba2),
 	.sd_rd(sd_rd),
 	.sd_wr(sd_wr),
 	.sd_ack(sd_ack),
 
 	.sd_buff_addr(sd_buff_addr),
 	.sd_buff_dout(sd_buff_dout),
-	.sd_buff_din(sd_buff_din),
+	.sd_buff_din(c1541_1_busy ? sd_buff_din1 : sd_buff_din2),
 	.sd_buff_wr(sd_buff_wr),
 	.img_mounted(sd_change),
 	.img_readonly(disk_readonly),
 
 	.ps2_key(ps2_key),
+	.ps2_mouse(ps2_mouse),
 
 	.ioctl_download(ioctl_download),
 	.ioctl_index(ioctl_index),
@@ -268,7 +362,7 @@ wire nmi;
 wire reset_crt;
 
 wire [24:0] cart_addr;
-wire load_cart = (ioctl_index == 3) || (ioctl_index == 'hC0);
+wire load_cart = (ioctl_index == 5) || (ioctl_index == 'hC0);
 
 cartridge cartridge
 (
@@ -324,8 +418,6 @@ wire [6:0] joyA_c64 = status[3] ? joyB_int : joyA_int;
 wire [6:0] joyB_c64 = status[3] ? joyA_int : joyB_int;
 
 
-reg [24:0] ioctl_ram_addr;
-reg  [7:0] ioctl_ram_data;
 reg [24:0] ioctl_load_addr;
 reg        ioctl_req_wr;
 reg        ioctl_iec_cycle_used;
@@ -346,8 +438,14 @@ reg        force_erase;
 reg        erasing;
 
 wire       iec_cycle = (ces == 4'b1011);
+reg        iec_cycle_ce;
+reg        iec_cycle_we;
+reg [24:0] iec_cycle_addr;
+reg  [7:0] iec_cycle_data;
 
-always @(negedge clk_sys) begin
+localparam TAP_ADDR = 25'h200000;
+
+always @(posedge clk_sys) begin
 	reg [4:0] erase_to;
 	reg old_download;
 	reg erase_cram;
@@ -358,20 +456,24 @@ always @(negedge clk_sys) begin
 	iec_cycleD <= iec_cycle;
 	cart_hdr_wr <= 0;
 	
-	if (iec_cycle & ~iec_cycleD & ioctl_req_wr) begin
-		ioctl_req_wr <= 0;
-		ioctl_iec_cycle_used <= 1;
-		ioctl_ram_addr <= ioctl_load_addr;
-		ioctl_load_addr <= ioctl_load_addr + 1'b1;
-		if (erasing) ioctl_ram_data <= 0;
-		else ioctl_ram_data <= ioctl_data;
-	end
-	else begin
-		if (!iec_cycle) ioctl_iec_cycle_used <= 0;
+	if (~iec_cycle & iec_cycleD) begin
+		iec_cycle_ce <= 1;
+		iec_cycle_we <= 0;
+		iec_cycle_addr <= tap_play_addr + TAP_ADDR;
+		if (ioctl_req_wr) begin
+			ioctl_req_wr <= 0;
+			iec_cycle_we <= 1;
+			iec_cycle_addr <= ioctl_load_addr;
+			ioctl_load_addr <= ioctl_load_addr + 1'b1;
+			if (erasing) iec_cycle_data <= {8{ioctl_load_addr[6]}};
+			else iec_cycle_data <= ioctl_data;
+		end
 	end
 
+	if (iec_cycle & iec_cycleD) {iec_cycle_ce, iec_cycle_we} <= 0;
+
 	if (ioctl_wr) begin
-		if (ioctl_index == 2) begin
+		if (ioctl_index == 4) begin
 			if (ioctl_addr == 0) ioctl_load_addr[7:0] <= ioctl_data;
 			else if (ioctl_addr == 1) ioctl_load_addr[15:8] <= ioctl_data;
 			else ioctl_req_wr <= 1;
@@ -419,6 +521,11 @@ always @(negedge clk_sys) begin
 				end
 			end
 		end
+		
+		if (load_tap) begin
+			if (ioctl_addr == 0) ioctl_load_addr <= TAP_ADDR;
+			ioctl_req_wr <= 1;
+		end
 	end
 	
 	if (old_download != ioctl_download && load_cart) begin
@@ -426,7 +533,7 @@ always @(negedge clk_sys) begin
 		erase_cram <= 1;
 	end 
 
-	start_strk <= (old_download && ~ioctl_download && ioctl_index == 2);
+	start_strk <= (old_download && ~ioctl_download && ioctl_index == 4);
 	
 	old_st0 <= status[0];
 	if (~old_st0 & status[0]) cart_attached <= 0;
@@ -462,12 +569,14 @@ always @(posedge clk_sys) begin
 			to <= 0;
 			act <= act + 1'd1;
 			case(act)
-				1: key <= 'h2d;
-				3: key <= 'h3c;
-				5: key <= 'h31;
-				7: key <= 'h4c;
-				9: key <= 'h5a;
-				10:act <= 0;
+				1: key <= 'h12;
+				2: key <= 'h6c;   // CLR instead of ending with ":" so not to break compatibility (eg "a mind is born")
+				5: key <= 'h12;   // Unstuck shift
+				7: key <= 'h2d;
+				9: key <= 'h3c;
+				11: key <= 'h31;
+				13: key <= 'h5a;  
+				15:act <= 0;
 			endcase
 			key[9] <= act[0];
 		end
@@ -482,30 +591,28 @@ end
 assign SDRAM_CKE  = 1;
 assign SDRAM_DQML = 0;
 assign SDRAM_DQMH = 0;
-assign SDRAM_DQ   = sdram_we ? {8'd0, sdram_data_out} : 'Z;
 
-wire        sdram_ce = (!iec_cycle) ?  mem_ce : ioctl_iec_cycle_used;
-wire        sdram_we = (!iec_cycle) ? ~ram_we : ioctl_iec_cycle_used;
-wire [24:0] sdram_addr     = (!iec_cycle) ? cart_addr    : ioctl_ram_addr;
-wire  [7:0] sdram_data_out = (!iec_cycle) ? c64_data_out : ioctl_ram_data;
-
-sdram sdr
+wire [7:0] sdram_data;
+sdram sdram
 (
 	.sd_addr(SDRAM_A),
+	.sd_data(SDRAM_DQ),
 	.sd_ba(SDRAM_BA),
 	.sd_cs(SDRAM_nCS),
 	.sd_we(SDRAM_nWE),
 	.sd_ras(SDRAM_nRAS),
 	.sd_cas(SDRAM_nCAS),
-	
-	.clk(clk64),
-	.addr(sdram_addr),
-	.init(~pll_locked),
-	.we(sdram_we),
-	.refresh(idle), // refresh ram in idle state
-	.ce(sdram_ce)
-);
+	.sd_clk(SDRAM_CLK),
 
+	.clk(clk64),
+	.init(~pll_locked),
+	.refresh(idle),
+	.addr( iec_cycle ? iec_cycle_addr : cart_addr    ),
+	.ce  ( iec_cycle ? iec_cycle_ce   : mem_ce       ),
+	.we  ( iec_cycle ? iec_cycle_we   : ~ram_we      ),
+	.din ( iec_cycle ? iec_cycle_data : c64_data_out ),
+	.dout( sdram_data )
+);
 
 wire  [7:0] c64_data_out;
 wire [15:0] c64_addr;
@@ -536,7 +643,7 @@ fpga64_sid_iec fpga64
 	.ps2_key(key),
 	.ramaddr(c64_addr),
 	.ramdataout(c64_data_out),
-	.ramdatain(SDRAM_DQ[7:0]),
+	.ramdatain(sdram_data),
 	.ramce(ram_ce),
 	.ramwe(ram_we),
 	.ntscmode(ntsc),
@@ -568,6 +675,10 @@ fpga64_sid_iec fpga64
 	.joyb(joyB_c64),
 	.joyc(joyC_c64),
 	.joyd(joyD_c64),
+	.mouse_en({mouse_en & status[24], mouse_en & ~status[24]}),
+	.mouse_x(mouse_x),
+	.mouse_y(mouse_y),
+	.mouse_btn(mouse_btn),
 	.ces(ces),
 	.idle(idle),
 	.sid_we_ext(sid_we),
@@ -584,6 +695,10 @@ fpga64_sid_iec fpga64
 	.c64rom_data(ioctl_data),
 	.c64rom_wr((ioctl_index == 0) && !ioctl_addr[14] && ioctl_download && ioctl_wr),
 
+	.cass_motor(cass_motor),
+	.cass_sense(~tap_play),
+	.cass_in(cass_do),
+
 	.uart_enable(status[1]),
 	.uart_txd(UART_TXD),
 	.uart_rts(!UART_RTS), // Trying inverting these, as I think they are breaking minicom and other terminal programs on the HPS? ElectronAsh.
@@ -597,16 +712,43 @@ fpga64_sid_iec fpga64
 	.uart_dsr(1)
 );
 
+wire [7:0] mouse_x;
+wire [7:0] mouse_y;
+wire [1:0] mouse_btn;
+
+c1351 mouse
+(
+	.clk_sys(clk_sys),
+	.reset(~reset_n),
+
+	.ps2_mouse(ps2_mouse),
+	
+	.potX(mouse_x),
+	.potY(mouse_y),
+	.button(mouse_btn)
+);
+
+reg mouse_en;
+always @(posedge clk_sys) begin
+	reg old_stb;
+	
+	old_stb <= ps2_mouse[24];
+	if(old_stb ^ ps2_mouse[24]) mouse_en <= 1;
+	if(joyA_c64 | joyB_c64) mouse_en <= 0;
+end
+
+wire drive9 = status[25];
+
 reg c64_iec_data_i, c64_iec_clk_i;
 always @(posedge clk_sys) begin
 	reg iec_data_d1, iec_clk_d1;
 	reg iec_data_d2, iec_clk_d2;
 
-	iec_data_d1 <= c1541_iec_data;
+	iec_data_d1 <= c1541_1_iec_data & (~drive9 | c1541_2_iec_data);
 	iec_data_d2 <= iec_data_d1;
 	if(iec_data_d1 == iec_data_d2) c64_iec_data_i <= iec_data_d2;
 
-	iec_clk_d1 <= c1541_iec_clk;
+	iec_clk_d1 <= c1541_1_iec_clk & (~drive9 | c1541_2_iec_clk);
 	iec_clk_d2 <= iec_clk_d1;
 	if(iec_clk_d1 == iec_clk_d2) c64_iec_clk_i <= iec_clk_d2;
 end
@@ -614,10 +756,13 @@ end
 wire c64_iec_clk;
 wire c64_iec_data;
 wire c64_iec_atn;
-wire c1541_iec_clk;
-wire c1541_iec_data;
 
-c1541_sd c1541
+wire c1541_1_iec_clk;
+wire c1541_1_iec_data;
+wire c1541_1_led;
+wire c1541_1_busy;
+
+c1541_sd c1541_1
 (
 	.clk_c1541(clk64 & ce_c1541),
 	.clk_sys(clk_sys),
@@ -627,36 +772,78 @@ c1541_sd c1541
 	.rom_wr((ioctl_index == 0) &&  ioctl_addr[14] && ioctl_download && ioctl_wr),
 	.rom_std(status[14]),
 
-	.disk_change(sd_change),
+	.disk_change(sd_change[0]),
 	.disk_readonly(disk_readonly),
+	.drive_num(0),
 
 	.iec_atn_i(c64_iec_atn),
 	.iec_data_i(c64_iec_data),
 	.iec_clk_i(c64_iec_clk),
-	.iec_data_o(c1541_iec_data),
-	.iec_clk_o(c1541_iec_clk),
+	.iec_data_o(c1541_1_iec_data),
+	.iec_clk_o(c1541_1_iec_clk),
 	.iec_reset_i(~reset_n),
 
-	.sd_lba(sd_lba),
-	.sd_rd(sd_rd),
-	.sd_wr(sd_wr),
+	.sd_lba(sd_lba1),
+	.sd_rd(sd_rd[0]),
+	.sd_wr(sd_wr[0]),
 	.sd_ack(sd_ack),
 	.sd_buff_addr(sd_buff_addr),
 	.sd_buff_dout(sd_buff_dout),
-	.sd_buff_din(sd_buff_din),
+	.sd_buff_din(sd_buff_din1),
+	.sd_buff_wr(sd_buff_wr),
+	.sd_busy(c1541_1_busy),
+
+	.led(c1541_1_led)
+);
+
+wire c1541_2_iec_clk;
+wire c1541_2_iec_data;
+wire c1541_2_led;
+
+c1541_sd c1541_2
+(
+	.clk_c1541(clk64 & ce_c1541),
+	.clk_sys(clk_sys),
+
+	.rom_addr(ioctl_addr[13:0]),
+	.rom_data(ioctl_data),
+	.rom_wr((ioctl_index == 0) &&  ioctl_addr[14] && ioctl_download && ioctl_wr),
+	.rom_std(status[14]),
+
+	.disk_change(sd_change[1]),
+	.disk_readonly(disk_readonly),
+	.drive_num(1),
+
+	.iec_atn_i(c64_iec_atn | ~drive9),
+	.iec_data_i(c64_iec_data | ~drive9),
+	.iec_clk_i(c64_iec_clk | ~drive9),
+	.iec_data_o(c1541_2_iec_data),
+	.iec_clk_o(c1541_2_iec_clk),
+	.iec_reset_i(~reset_n),
+
+	.sd_lba(sd_lba2),
+	.sd_rd(sd_rd[1]),
+	.sd_wr(sd_wr[1]),
+	.sd_ack(sd_ack),
+	.sd_buff_addr(sd_buff_addr),
+	.sd_buff_dout(sd_buff_dout),
+	.sd_buff_din(sd_buff_din2),
 	.sd_buff_wr(sd_buff_wr),
 
-	.led(LED_USER)
+	.led(c1541_2_led)
 );
 
 reg ce_c1541;
 always @(negedge clk64) begin
 	int sum = 0;
+	int msum;
+	
+	msum <= ntsc ? 65454537 : 63055911;
 
 	ce_c1541 <= 0;
-	sum = sum + (ntsc ? 31288892 : 32506000);
-	if(sum >= 64000000) begin
-		sum = sum - 64000000;
+	sum = sum + 32000000;
+	if(sum >= msum) begin
+		sum = sum - msum;
 		ce_c1541 <= 1;
 	end
 end
@@ -692,27 +879,39 @@ always @(posedge clk_sys) begin
 	end
 end
 
-reg [3:0] clkdivpix;
-always @(posedge clk64) clkdivpix <= clkdivpix + 1'b1;
+reg ce_pix;
+always @(posedge CLK_VIDEO) begin
+	reg [2:0] div;
+	reg       lores;
 
-wire ce_pix = (~clkdivpix[3] | ~hq2x160) & ~clkdivpix[2] & ~clkdivpix[1] & ~clkdivpix[0];
+	div <= div + 1'b1;
+
+	if(div == 5) begin
+		div <= 0;
+		lores <= ~lores;
+	end
+	
+	ce_pix <= (~lores | ~hq2x160) && !div;
+end
+
 wire scandoubler = status[10:8] || forced_scandoubler;
 
-assign CLK_VIDEO = clk64;
+assign CLK_VIDEO = clk48;
 assign VIDEO_ARX = status[5:4] ? 8'd16 : 8'd4;
 assign VIDEO_ARY = status[5:4] ? 8'd9  : 8'd3;
 assign VGA_SL    = (status[10:8] > 2) ? status[9:8] - 2'd2 : 2'd0;
 assign VGA_F1    = 0;
 
-video_mixer video_mixer
+video_mixer #(.GAMMA(1)) video_mixer
 (
-	.clk_sys(clk64),
+	.clk_vid(CLK_VIDEO),
 	.ce_pix(ce_pix),
 	.ce_pix_out(CE_PIXEL),
 
 	.scanlines(0),
 	.hq2x(~status[10] & (status[9] ^ status[8])),
 	.scandoubler(scandoubler),
+	.gamma_bus(gamma_bus),
 
 	.R(r),
 	.G(g),
@@ -808,8 +1007,8 @@ reg [15:0] al,ar;
 always @(posedge clk_sys) begin
 	reg [16:0] alm,arm;
 
-	alm <= opl_en ? {opl_out[15],opl_out} + {audio_l[17],audio_l[17:2]} : {audio_l[17],audio_l[17:2]};
-	arm <= opl_en ? {opl_out[15],opl_out} + {audio_r[17],audio_r[17:2]} : {audio_r[17],audio_r[17:2]};
+	alm <= (opl_en ? {opl_out[15],opl_out} + {audio_l[17],audio_l[17:2]} : {audio_l[17],audio_l[17:2]}) + {cass_snd, 10'd0};
+	arm <= (opl_en ? {opl_out[15],opl_out} + {audio_r[17],audio_r[17:2]} : {audio_r[17],audio_r[17:2]}) + {cass_snd, 10'd0};
 	al <= ($signed(alm) > $signed(17'd32767)) ? 16'd32767 : ($signed(alm) < $signed(-17'd32768)) ? -16'd32768 : alm[15:0];
 	ar <= ($signed(arm) > $signed(17'd32767)) ? 16'd32767 : ($signed(arm) < $signed(-17'd32768)) ? -16'd32768 : arm[15:0];
 end
@@ -818,5 +1017,76 @@ assign AUDIO_L = al;
 assign AUDIO_R = ar;
 assign AUDIO_S = 1;
 assign AUDIO_MIX = status[19:18];
+
+//------------- TAP -------------------
+
+reg [24:0] tap_play_addr;
+reg [24:0] tap_last_addr;
+wire       tap_reset = ~reset_n | tape_download | status[23] | (cass_motor & ((tap_last_addr - tap_play_addr) < 80));
+reg        tap_wrreq;
+wire       tap_wrfull;
+wire       tap_finish;
+wire       tap_loaded = (tap_play_addr < tap_last_addr);
+reg        tap_play;
+wire       tap_play_btn = status[7];
+
+wire       load_tap = (ioctl_index == 6);
+wire       tape_download = ioctl_download & load_tap;
+
+always @(posedge clk_sys) begin
+	reg iec_cycleD, tap_finishD;
+	reg read_cyc;
+	reg tap_play_btnD;
+
+	tap_play_btnD <= tap_play_btn;
+	iec_cycleD <= iec_cycle;
+	tap_finishD <= tap_finish;
+	tap_wrreq <= 0;
+
+	if(tap_reset) begin
+		//C1530 module requires one more byte at the end due to fifo early check.
+		tap_last_addr <= tape_download ? ioctl_addr+2'd2 : 25'd0;
+		tap_play_addr <= 0;
+		tap_play <= tape_download;
+		read_cyc <= 0;
+	end
+	else begin
+		if (~tap_play_btnD & tap_play_btn) tap_play <= ~tap_play;
+		if (~tap_finishD & tap_finish) tap_play <= 0;
+
+		if (~iec_cycle & iec_cycleD & ~tap_wrfull & tap_loaded) read_cyc <= 1;
+		if (iec_cycle & iec_cycleD & read_cyc) begin
+			tap_play_addr <= tap_play_addr + 1'd1;
+			read_cyc <= 0;
+			tap_wrreq <= 1;
+		end
+	end
+end
+
+reg [26:0] act_cnt;
+always @(posedge clk_sys) act_cnt <= act_cnt + (tap_play ? 4'd8 : 4'd1);
+wire tape_led = tap_loaded && (act_cnt[26] ? (~(tap_play & cass_motor) && act_cnt[25:18] > act_cnt[7:0]) : act_cnt[25:18] <= act_cnt[7:0]);
+
+wire cass_motor;
+wire cass_run = ~cass_motor & tap_play;
+wire cass_snd = cass_run & status[11] & cass_do;
+wire cass_do;
+
+c1530 c1530
+(
+	.clk(clk_sys),
+	.restart(tap_reset),
+
+	.clk_freq(32000000),
+	.cpu_freq(1000000),
+
+	.din(sdram_data),
+	.wr(tap_wrreq),
+	.full(tap_wrfull),
+	.empty(tap_finish),
+
+	.play(cass_run),
+	.dout(cass_do)
+);
 
 endmodule

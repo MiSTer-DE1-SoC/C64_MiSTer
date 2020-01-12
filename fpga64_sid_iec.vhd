@@ -89,6 +89,12 @@ entity fpga64_sid_iec is
 		joyB        : in  unsigned(6 downto 0);
 		joyC        : in  unsigned(6 downto 0);
 		joyD        : in  unsigned(6 downto 0);
+		
+		-- mouse interface
+		mouse_en    : in  std_logic_vector(1 downto 0);
+		mouse_x     : in  std_logic_vector(7 downto 0);
+		mouse_y     : in  std_logic_vector(7 downto 0);
+		mouse_btn   : in  std_logic_vector(1 downto 0);
 
 		-- serial port, for connection to pheripherals
 		serioclk    : out std_logic;
@@ -111,6 +117,11 @@ entity fpga64_sid_iec is
 		c64rom_addr : in  std_logic_vector(13 downto 0);
 		c64rom_data : in  std_logic_vector(7 downto 0);
 		c64rom_wr   : in  std_logic;
+
+		cass_motor  : out std_logic;
+		cass_write  : out std_logic;
+		cass_sense  : in  std_logic;
+		cass_in     : in  std_logic;
 
 		uart_enable : in  std_logic;
 
@@ -261,8 +272,10 @@ architecture rtl of fpga64_sid_iec is
 
 	signal clk_1MHz     : std_logic_vector(31 downto 0);
 	signal voice_volume : signed(17 downto 0);
-	signal pot_x        : std_logic_vector(7 downto 0);
-	signal pot_y        : std_logic_vector(7 downto 0);
+	signal pot_x1       : std_logic_vector(7 downto 0);
+	signal pot_y1       : std_logic_vector(7 downto 0);
+	signal pot_x2       : std_logic_vector(7 downto 0);
+	signal pot_y2       : std_logic_vector(7 downto 0);
 	signal audio_8580   : std_logic_vector(17 downto 0);
 
 	component sid8580
@@ -593,8 +606,11 @@ begin
 	sid_we_ext  <= sid_we and (not sid_mode(1) or not sid_sel_int);
 	sid_do      <= std_logic_vector(io_data) when sid_sel_int = '0' else sid_do6581 when sid_ver='0' else sid_do8580;
 
-	pot_x <= X"FF" when ((cia1_pao(7) and JoyA(5)) or (cia1_pao(6) and JoyB(5))) = '0' else X"00";
-	pot_y <= X"FF" when ((cia1_pao(7) and JoyA(6)) or (cia1_pao(6) and JoyB(6))) = '0' else X"00";
+	pot_x1 <= (others => '1' ) when cia1_pao(6) = '0' else mouse_x when mouse_en(0) = '1' else (others => not joyA(5));
+	pot_y1 <= (others => '1' ) when cia1_pao(6) = '0' else mouse_y when mouse_en(0) = '1' else (others => not joyA(6));
+
+	pot_x2 <= (others => '1' ) when cia1_pao(7) = '0' else mouse_x when mouse_en(1) = '1' else (others => not joyB(5));
+	pot_y2 <= (others => '1' ) when cia1_pao(7) = '0' else mouse_y when mouse_en(1) = '1' else (others => not joyB(6));
 
 	sid_6581: entity work.sid_top
 	port map (
@@ -606,8 +622,8 @@ begin
 		wdata => std_logic_vector(cpuDo),
 		rdata => sid_do6581,
 
-		potx => pot_x,
-		poty => pot_y,
+		potx => pot_x1 and pot_x2,
+		poty => pot_y1 and pot_y2,
 
 		comb_wave_l => '0',
 		comb_wave_r => '0',
@@ -628,11 +644,11 @@ begin
 		addr => std_logic_vector(cpuAddr(4 downto 0)),
 		data_in => std_logic_vector(cpuDo),
 		data_out => sid_do8580,
-		pot_x => pot_x,
-		pot_y => pot_y,
+		pot_x => pot_x1 and pot_x2,
+		pot_y => pot_y1 and pot_y2,
 		audio_data => audio_8580,
 		extfilter_en => extfilter_en
-	);	
+	);
 
 -- -----------------------------------------------------------------------
 -- CIAs
@@ -642,8 +658,8 @@ begin
 			clk => clk32,
 			tod => vicVSync,
 			res_n => not reset,
-            phi2_p => enableCia_p,
-            phi2_n => enableCia_n,
+			phi2_p => enableCia_p,
+			phi2_n => enableCia_n,
 			cs_n => not cs_cia1,
 			rw => not cpuWe,
 
@@ -656,7 +672,7 @@ begin
 			pb_in => cia1_pbi,
 			pb_out => cia1_pbo,
 
-			flag_n => '1',
+			flag_n => cass_in,
 			sp_in => '1',
 			cnt_in => '1',
 
@@ -668,8 +684,8 @@ begin
 			clk => clk32,
 			tod => vicVSync,
 			res_n => not reset,
-            phi2_p => enableCia_p,
-            phi2_n => enableCia_n,
+			phi2_p => enableCia_p,
+			phi2_n => enableCia_n,
 			cs_n => not cs_cia2,
 			rw => not cpuWe,
 
@@ -711,9 +727,12 @@ begin
 			do => cpuDo,
 			we => cpuWe,
 			
-			diIO => "00010111",
+			diIO => cpuIO(7) & cpuIO(6) & cpuIO(5) & cass_sense & cpuIO(3) & "111",
 			doIO => cpuIO
 		);
+
+	cass_motor <= cpuIO(5);
+	cass_write <= cpuIO(3);
 
 -- -----------------------------------------------------------------------
 -- Keyboard
@@ -723,8 +742,8 @@ begin
 			clk => clk32,
 			ps2_key => ps2_key,
 
-			joyA => not joyA(4 downto 0),
-			joyB => not joyB(4 downto 0),
+			joyA => not joyA(4 downto 0) and not ((mouse_en(0) and mouse_btn(0))&"000"&(mouse_en(0) and mouse_btn(1))),
+			joyB => not joyB(4 downto 0) and not ((mouse_en(1) and mouse_btn(0))&"000"&(mouse_en(1) and mouse_btn(1))),
 			pai => cia1_pao,
 			pbi => cia1_pbo,
 			pao => cia1_pai,
@@ -756,9 +775,9 @@ begin
 		end if;
 	end process;
 	
-	iec_data_o <= cia2_pao(5);
-	iec_clk_o <= cia2_pao(4);
-	iec_atn_o <= cia2_pao(3);
+	iec_data_o <= not cia2_pao(5);
+	iec_clk_o <= not cia2_pao(4);
+	iec_atn_o <= not cia2_pao(3);
 	ramDataOut <= "00" & cia2_pao(5 downto 3) & "000" when sysCycle >= CYCLE_IEC0 and sysCycle <= CYCLE_IEC3 else cpuDo;
 	ramAddr <= systemAddr when (phi0_cpu = '1') or (phi0_vic = '1') else (others => '0');
 	ramWe <= '0' when sysCycle = CYCLE_IEC2 or sysCycle = CYCLE_IEC3 else not systemWe;
@@ -810,8 +829,8 @@ begin
 		end if;
 		if rising_edge(clk32) then
 			if sysCycle = CYCLE_IEC1 then
-				cia2_pai(7) <= not(iec_data_i or cia2_pao(5));
-				cia2_pai(6) <= not(iec_clk_i or cia2_pao(4));
+				cia2_pai(7) <= iec_data_i and not cia2_pao(5);
+				cia2_pai(6) <= iec_clk_i and not cia2_pao(4);
 			end if;
 		end if;
 	end process;

@@ -1,6 +1,4 @@
-# C64 for [DE1-SoC Edition of MiSTer](https://github.com/MiSTer-DE1-SoC/Main_MiSTer/wiki)
-
-![C64 DE10-Standard FPGA](https://user-images.githubusercontent.com/48859672/55352045-3d469280-54c0-11e9-9253-6b6ef8164dc1.JPG)
+# C64 for [MiSTer](https://github.com/MiSTer-devel/Main_MiSTer/wiki)
 
 Based on FPGA64 by Peter Wendrich with heavy later modifications by different people.
 
@@ -31,10 +29,19 @@ Copy the *.rbf to the root of the SD card. Copy disks/carts to C64 folder.
 
 ### Loadable ROM
 Alternative ROM can be placed in C64 folder with the name boot.rom.
-Format is simple concatenation of Kernal.rom + C1541.rom
+Format is simple concatenation of BASIC + Kernal.rom + C1541.rom
+
+To create the ROM in DOS or Windows, gather your files in one place and use the following command from the DOS prompt. 
+The easiest place to acquire the ROM files is from the VICE distribution. BASIC and KERNAL are in the C64 directory,
+and dos1541 is in the Drives directory.
+
+`COPY BASIC + KERNAL + dos1541 BOOT.ROM /B`
+
+To use JiffyDOS or another alternative kernel, replace the filenames with the name of your ROM or BIN file.  (Note, you muse use the 1541-II ROM. The ROM for the original 1541 only covers half the drive ROM and does not work with emulators.)
+
+`COPY /B BASIC.bin +JiffyDOS_C64.bin +JiffyDOS_1541-II.bin BOOT.ROM`
+
+To confirm you have the correct image, the BOOT.ROM created must be exactly 32768 bytes long. 
 
 ### Autoload the cartridge
 Place the desired cartridge with the name boot3.rom in C64 folder to autoload it on start.
-
-
-This project brought to you by http://www.modernhackers.com
